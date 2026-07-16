@@ -1,0 +1,13 @@
+# Arduino build output (Export Compiled Binary / arduino-cli --export-binaries)
+build/
+*.hex
+*.bin
+*.elf
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Arduino IDE 2 / editor state
+.vscode/
