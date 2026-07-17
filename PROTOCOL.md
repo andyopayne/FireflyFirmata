@@ -314,4 +314,7 @@ Due (3.3 V, 12-bit ADC, two true DACs) — same grammar, different answers:
 - Whether `caps?` should include the firmware's motor-slot count on boards where
   RAM, not firmware, is the limit.
 - Exact `board=`/`mcu=` identifier tables for the supported boards (uno, mega,
-  leonardo, yun, due, unor4, redboard-esp32, pico2).
+  leonardo, yun, due, unor4wifi, unor4minima, pico, picow, pico2, esp32). The
+  `board=` id is as specific as the firmware can tell from its compile-time board
+  define — the R4 and Pico families report the exact variant so it matches what a
+  host shows from the USB product id; unrecognized targets report `generic`.

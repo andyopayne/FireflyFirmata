@@ -6,7 +6,7 @@
   Author:     Andy Payne
   Copyright:  © 2026 Andy Payne
   License:    MIT (see the LICENSE file in this repository)
-  Updated:    2026-07-16
+  Updated:    2026-07-17
 
   ONE sketch for every supported board: the host discovers what this board can do (caps?)
   and configures pins over the wire (cfg) — no sketch editing, no per-project variants.
@@ -52,13 +52,25 @@
   #define BOARD "due"
   #define MCU   "sam3x8e"
   #define VOLTS "3.3"
-#elif defined(ARDUINO_UNOR4_MINIMA) || defined(ARDUINO_UNOR4_WIFI)
-  #define BOARD "unor4"
+// The R4 Minima and WiFi share the RA4M1 (identical pins/capabilities), but the board is
+// reported precisely so it matches what the host's port picker shows from the USB PID and
+// tells the two apart by name.
+#elif defined(ARDUINO_UNOR4_WIFI)
+  #define BOARD "unor4wifi"
+  #define MCU   "ra4m1"
+  #define VOLTS "5.0"
+#elif defined(ARDUINO_UNOR4_MINIMA)
+  #define BOARD "unor4minima"
   #define MCU   "ra4m1"
   #define VOLTS "5.0"
 #elif defined(ARDUINO_RASPBERRY_PI_PICO_2)
   #define BOARD "pico2"
   #define MCU   "rp2350"
+  #define VOLTS "3.3"
+// Pico W before the generic RP2040 fallback so it reports precisely.
+#elif defined(ARDUINO_RASPBERRY_PI_PICO_W)
+  #define BOARD "picow"
+  #define MCU   "rp2040"
   #define VOLTS "3.3"
 #elif defined(ARDUINO_ARCH_RP2040)
   #define BOARD "pico"
