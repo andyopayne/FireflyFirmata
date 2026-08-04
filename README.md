@@ -69,4 +69,4 @@ software (Python, Processing, anything with a serial port), that document is all
 ## License
 
 MIT — see [LICENSE](LICENSE). The sketches are meant to be read, edited, and learned
-from; that's why the protocol is text.
+from.
