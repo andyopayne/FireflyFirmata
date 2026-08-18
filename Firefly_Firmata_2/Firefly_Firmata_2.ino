@@ -208,10 +208,38 @@ struct Motor {
 static Motor s_motor[MOTOR_SLOTS];
 
 // Pins 0/1 carry the (hardware or programming-port) serial link on the classic boards;
-// they are reserved uniformly on every board for predictability.
+// they are reserved uniformly on every board for predictability. The classic ESP32's
+// console is UART0 on GPIO1(TX)/GPIO3(RX) — GPIO1 is caught by pin<2, GPIO3 is not, so
+// reserve it too or a cfg on d3 would fight the link we talk over.
 static bool isReservedPin(uint8_t pin) {
+#if defined(CONFIG_IDF_TARGET_ESP32)
+  if (pin == 3) return true;   // UART0 RX (console)
+#endif
   return pin < 2;
 }
+
+// ---- pin usability -------------------------------------------------------
+// The ESP32 family has input-only pins (GPIO34-39 on the classic ESP32), GPIO numbers
+// that aren't bonded out, and pins wired to the module's SPI flash. Usability is derived
+// from the SoC's OWN macros (GPIO_IS_VALID_GPIO / GPIO_IS_VALID_OUTPUT_GPIO), which the
+// ESP-IDF defines per target — so this stays correct for every ESP32 variant (classic,
+// S2, S3, C3, ...) with no per-board table. Only the flash-pin set is chip-specific
+// enough to spell out. Every other architecture exposes each digital pin as a full I/O
+// pin, which is already the truth there, so the defaults are a no-op elsewhere.
+#if defined(ARDUINO_ARCH_ESP32)
+static bool isFlashPin(uint8_t pin) {
+  #if defined(CONFIG_IDF_TARGET_ESP32)
+    return pin >= 6 && pin <= 11;    // WROOM/WROVER in-package SPI flash
+  #else
+    (void) pin; return false;        // TODO: confirm the flash-pin set per target as we test S2/S3/C3
+  #endif
+}
+static bool pinExists(uint8_t pin)    { return GPIO_IS_VALID_GPIO(pin) && !isFlashPin(pin); }
+static bool pinCanOutput(uint8_t pin) { return GPIO_IS_VALID_OUTPUT_GPIO(pin); }
+#else
+static bool pinExists(uint8_t pin)    { return pin < NUM_DIGITAL_PINS; }
+static bool pinCanOutput(uint8_t pin) { (void) pin; return true; }
+#endif
 
 static bool isAnalogAlias(uint8_t pin) {
   for (uint8_t i = 0; i < NUM_ANALOG_INPUTS; i++)
@@ -484,6 +512,7 @@ static Target parseTarget(const char* name) {
   }
   else if (name[0] == 'd') {
     if (parseUInt(name + 1, &index) && index < NUM_DIGITAL_PINS
+        && pinExists((uint8_t) index)
         && !isReservedPin((uint8_t) index)
         && !isAnalogAlias((uint8_t) index)
         && !isDacPin((uint8_t) index)) {
@@ -518,12 +547,15 @@ static PinUse parseMode(const char* name) {
 static bool supports(const Target& target, PinUse mode) {
   switch (target.kind) {
     case TK_ANALOG:
-      return mode == MODE_AIN || mode == MODE_DIN || mode == MODE_DIN_PULLUP || mode == MODE_DOUT;
+      if (mode == MODE_AIN || mode == MODE_DIN || mode == MODE_DIN_PULLUP) return true;
+      if (mode == MODE_DOUT) return pinCanOutput(target.pin);   // input-only ADC pins read but can't drive
+      return false;
     case TK_DIGITAL:
-      if (mode == MODE_DIN || mode == MODE_DIN_PULLUP || mode == MODE_DOUT) return true;
-      if (mode == MODE_PWM) return digitalPinHasPWM(target.pin);
+      if (mode == MODE_DIN || mode == MODE_DIN_PULLUP) return true;
+      if (mode == MODE_DOUT) return pinCanOutput(target.pin);
+      if (mode == MODE_PWM) return pinCanOutput(target.pin) && digitalPinHasPWM(target.pin);
 #if HAS_SERVO
-      if (mode == MODE_SERVO) return true;
+      if (mode == MODE_SERVO) return pinCanOutput(target.pin);
 #endif
       return false;
     case TK_DAC:
@@ -613,22 +645,26 @@ static void handleCaps() {
   for (uint8_t i = 0; i < NUM_ANALOG_INPUTS; i++) {
     Serial.print(F("cap a"));
     Serial.print(i);
-    Serial.print(F(" modes=ain,din,dout ain="));
+    Serial.print(F(" modes=ain,din"));
+    if (pinCanOutput(analogInputToDigitalPin(i))) Serial.print(F(",dout"));
+    Serial.print(F(" ain="));
     Serial.print(AIN_BITS);
     Serial.print('\n');
     count++;
   }
 
   for (uint8_t pin = 2; pin < NUM_DIGITAL_PINS; pin++) {
-    if (isAnalogAlias(pin) || isDacPin(pin)) continue;
+    if (!pinExists(pin) || isReservedPin(pin) || isAnalogAlias(pin) || isDacPin(pin)) continue;
+    bool out = pinCanOutput(pin);
     Serial.print(F("cap d"));
     Serial.print(pin);
-    Serial.print(F(" modes=din,dout"));
-    if (digitalPinHasPWM(pin)) Serial.print(F(",pwm"));
+    Serial.print(F(" modes=din"));
+    if (out) Serial.print(F(",dout"));
+    if (out && digitalPinHasPWM(pin)) Serial.print(F(",pwm"));
 #if HAS_SERVO
-    Serial.print(F(",servo"));
+    if (out) Serial.print(F(",servo"));
 #endif
-    if (digitalPinHasPWM(pin)) {
+    if (out && digitalPinHasPWM(pin)) {
       Serial.print(F(" pwm="));
       Serial.print(PWM_BITS);
     }
