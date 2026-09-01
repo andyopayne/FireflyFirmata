@@ -207,15 +207,26 @@ struct Motor {
 
 static Motor s_motor[MOTOR_SLOTS];
 
-// Pins 0/1 carry the (hardware or programming-port) serial link on the classic boards;
-// they are reserved uniformly on every board for predictability. The classic ESP32's
-// console is UART0 on GPIO1(TX)/GPIO3(RX) — GPIO1 is caught by pin<2, GPIO3 is not, so
-// reserve it too or a cfg on d3 would fight the link we talk over.
+// Pins 0/1 carry the (hardware or programming-port) serial link on the classic boards, so
+// they are reserved there. The classic ESP32's console is UART0 on GPIO1(TX)/GPIO3(RX) —
+// GPIO1 is caught by pin<2, GPIO3 is not, so reserve it too or a cfg on d3 would fight the
+// link we talk over. This predicate is the single source of truth for reserved pins: the
+// caps loops and parseTarget both consult it, so caps? and cfg always agree.
 static bool isReservedPin(uint8_t pin) {
 #if defined(CONFIG_IDF_TARGET_ESP32)
   if (pin == 3) return true;   // UART0 RX (console)
 #endif
-  return pin < 2;
+  // Official Raspberry Pi Pico boards talk over USB, so GP0/GP1 are FREE header pins (not the
+  // console) — unlike the pin<2 rule below. Instead, a few GPIOs are wired to on-board
+  // functions that aren't on the header and aren't user pins: GP23 (SMPS power-save),
+  // GP24 (VBUS sense), GP29 = a3 (VSYS/3 ADC). GP25 (user LED) is kept. On the wireless (W)
+  // boards those GPIOs belong to the CYW43 and the LED is NOT on GP25, so GP25 is reserved too.
+#if defined(ARDUINO_RASPBERRY_PI_PICO) || defined(ARDUINO_RASPBERRY_PI_PICO_2)
+  return pin == 23 || pin == 24 || pin == 29;
+#elif defined(ARDUINO_RASPBERRY_PI_PICO_W) || defined(ARDUINO_RASPBERRY_PI_PICO_2W)
+  return pin == 23 || pin == 24 || pin == 25 || pin == 29;   // TODO: verify on W hardware
+#endif
+  return pin < 2;   // all other boards: reserve the 0/1 serial (and strapping) pins
 }
 
 // ---- pin usability -------------------------------------------------------
@@ -504,7 +515,8 @@ static Target parseTarget(const char* name) {
 #endif
   }
   else if (name[0] == 'a') {
-    if (parseUInt(name + 1, &index) && index < NUM_ANALOG_INPUTS) {
+    if (parseUInt(name + 1, &index) && index < NUM_ANALOG_INPUTS
+        && !isReservedPin(analogInputToDigitalPin(index))) {
       target.kind = TK_ANALOG;
       target.index = (uint8_t) index;
       target.pin = analogInputToDigitalPin(index);
@@ -643,6 +655,7 @@ static void handleCaps() {
   uint16_t count = 0;
 
   for (uint8_t i = 0; i < NUM_ANALOG_INPUTS; i++) {
+    if (isReservedPin(analogInputToDigitalPin(i))) continue;   // e.g. Pico a3 = GP29 (VSYS), board-internal
     Serial.print(F("cap a"));
     Serial.print(i);
     Serial.print(F(" modes=ain,din"));
@@ -653,7 +666,7 @@ static void handleCaps() {
     count++;
   }
 
-  for (uint8_t pin = 2; pin < NUM_DIGITAL_PINS; pin++) {
+  for (uint8_t pin = 0; pin < NUM_DIGITAL_PINS; pin++) {   // isReservedPin() drops 0/1 per board
     if (!pinExists(pin) || isReservedPin(pin) || isAnalogAlias(pin) || isDacPin(pin)) continue;
     bool out = pinCanOutput(pin);
     Serial.print(F("cap d"));
