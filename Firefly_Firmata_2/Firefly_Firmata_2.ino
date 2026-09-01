@@ -104,11 +104,17 @@
 #endif
 #define PWM_BITS 8
 
-// True DACs (Due only, until the R4 dac module is added).
+// True DACs. The Due has two dedicated DAC pins (DAC0/DAC1); the R4 (RA4M1) has one 12-bit
+// DAC on A0 — shared with analog input a0, so the pin is advertised as both a0 and dac0 and
+// the host picks the mode. PWM-only boards fall through to DAC_COUNT 0.
 #if defined(ARDUINO_SAM_DUE)
   #define DAC_COUNT 2
   #define DAC_BITS  12
   static const uint8_t DAC_PINS[DAC_COUNT] = { DAC0, DAC1 };
+#elif defined(ARDUINO_UNOR4_WIFI) || defined(ARDUINO_UNOR4_MINIMA)
+  #define DAC_COUNT 1
+  #define DAC_BITS  12
+  static const uint8_t DAC_PINS[DAC_COUNT] = { A0 };
 #else
   #define DAC_COUNT 0
 #endif
