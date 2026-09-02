@@ -232,6 +232,13 @@ static bool isReservedPin(uint8_t pin) {
 #elif defined(ARDUINO_RASPBERRY_PI_PICO_W) || defined(ARDUINO_RASPBERRY_PI_PICO_2W)
   return pin == 23 || pin == 24 || pin == 25 || pin == 29;   // TODO: verify on W hardware
 #endif
+  // Native-USB AVR (Leonardo, Micro, …): the console is USB, so d0/d1 (Serial1) are FREE
+  // header pins — not the serial link the pin<2 rule assumes. The Yun is the exception:
+  // its Serial1 (d0/d1) is wired to the on-board Linux bridge, so it keeps 0/1 reserved via
+  // the default below. USBCON is only defined on the AVR parts with native USB (32u4/AT90USB).
+#if defined(USBCON) && !defined(ARDUINO_AVR_YUN)
+  return false;
+#endif
   return pin < 2;   // all other boards: reserve the 0/1 serial (and strapping) pins
 }
 
