@@ -103,7 +103,7 @@ Pico) is never a surprise. Key=value field order is not significant.
 One payload line per configurable resource, then `ok caps <count>`:
 
     cap d2 modes=din,dout
-    cap d3 modes=din,dout,pwm,servo pwm=8
+    cap d3 modes=din,dout,pwm,servo,tone pwm=8
     cap a0 modes=ain,din,dout ain=10
     cap dac0 modes=dac dac=12
     cap m1 modes=stepper
@@ -113,7 +113,9 @@ One payload line per configurable resource, then `ok caps <count>`:
   usable digitally (`cfg a0 din`) where hardware allows — the name identifies the
   physical pin, the mode defines its use.
 - Resolution is given in bits per mode where it varies (`ain=10`, `pwm=8`,
-  `dac=12`). Value ranges are always `0 … 2^bits − 1`; servos are degrees `0–180`.
+  `dac=12`). Value ranges are always `0 … 2^bits − 1`; servos are degrees `0–180`;
+  `tone` values are a frequency in Hz (`0` = silent), capped at an audible ceiling
+  rather than a bit-depth, so `tone` carries no resolution field.
 - `m<n>` are **motor slots** — firmware resources, not pins. The pins a motor uses
   are bound at `cfg` time. The slot count is a firmware/RAM budget: 2 on the small
   AVR boards (Uno, Leonardo, Yun), 4 elsewhere.
@@ -131,7 +133,9 @@ detected in Grasshopper before anything is sent.)
     cfg m1 stepper step=d2 dir=d3 speed=800 accel=1600
                               → ok cfg m1 stepper step=d2 dir=d3 speed=800 accel=1600
 
-Pin modes: `din` (arg `pullup` optional), `dout`, `ain`, `pwm`, `servo`, `dac`.
+Pin modes: `din` (arg `pullup` optional), `dout`, `ain`, `pwm`, `servo`, `dac`,
+`tone`. `tone` is offered on any output-capable digital pin, but only where the
+core provides `tone()` (AVR, SAM, Renesas, RP2040 — not classic ESP32).
 
 Motor mode: `stepper`, in three driver flavours selected by `type=`:
 
@@ -190,11 +194,27 @@ Write one or more configured output pins in a single line:
     set d3=90                 → ok set d3=90
     set d5=1 d6=200 dac0=2048 → ok set d5=1 d6=200 dac0=2048
     set d3=200                → wrn set d3=180 clamped
+    set d8=440                → ok set d8=440      (d8 in tone mode: 440 Hz)
+    set d8=0                  → ok set d8=0        (tone off)
 
 - Values out of range are **clamped** and applied — live slider data shouldn't
   fault a session — but the reply is a `wrn` echoing the *effective* values, so
   nothing is hidden.
 - Writing an unconfigured or non-output pin: `err set d5 unconfigured`.
+
+### `beep <pin> <freq> [<ms>]`
+Play a tone on a pin already in `tone` mode, letting the board time the stop itself:
+
+    beep d8 440 500           → ok beep d8 440 500     (440 Hz for 500 ms, then silent)
+    beep d8 440               → ok beep d8 440 0       (plays until changed)
+    beep d5 440 500           → err beep d5 unconfigured
+
+- `ms > 0` uses the board's non-blocking `tone(pin, freq, dur)`: the tone stops on its own
+  after `ms` milliseconds. `ms` omitted or `0` plays until changed.
+- For a *sustained* or *gated* tone, use plain `set d8=<freq>` instead; `beep` exists for
+  one-shot beeps, whose fixed length must not depend on the host sending a later stop.
+- Out-of-range frequencies are clamped and echoed with `wrn`, exactly like `set`.
+- `beep` is offered only where `tone` is (AVR, SAM, Renesas, RP2040); other cores ignore it.
 
 ### `move <motor> <steps>` · `moveto <motor> <pos>` · `stop <motor>`
 Non-blocking stepper motion (AccelStepper semantics): `move` is relative,
@@ -258,7 +278,7 @@ Uno (5 V, 10-bit ADC, no DAC):
     ok hello fw=firefly2 ver=2.0.0 board=uno mcu=atmega328p volts=5.0
     caps?
     cap d2 modes=din,dout
-    cap d3 modes=din,dout,pwm,servo pwm=8
+    cap d3 modes=din,dout,pwm,servo,tone pwm=8
     …
     cap a0 modes=ain,din,dout ain=10
     …

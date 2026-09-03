@@ -6,7 +6,7 @@
   Author:     Andy Payne
   Copyright:  © 2026 Andy Payne
   License:    MIT (see the LICENSE file in this repository)
-  Updated:    2026-07-17
+  Updated:    2026-09-02
 
   ONE sketch for every supported board: the host discovers what this board can do (caps?)
   and configures pins over the wire (cfg) — no sketch editing, no per-project variants.
@@ -15,7 +15,7 @@
   human-readable text at 115200 baud — open a serial monitor and type "hello".
 
   Protocol summary (grammar major 2):
-    host → board   hello | caps? | cfg | report | set | move/moveto/stop/zero | reset
+    host → board   hello | caps? | cfg | report | set | beep | move/moveto/stop/zero | reset
     board → host   replies: payload lines + exactly one "ok/wrn/err verb …" status line
                    events (unsolicited, "!" prefix): !ready !r !done !wrn !err
     wrn means APPLIED but not exactly as asked (value clamped, cadence floored).
@@ -136,6 +136,16 @@
   #define HAS_SERVO   0
 #endif
 
+// Tone support, gated by ARCHITECTURE like Servo: tone()/noTone() ship in these cores'
+// Arduino.h (no #include needed). ESP32's tone() is a different (LEDC) implementation, so it
+// stays tone-less here until its own module lands — the capability query tells the host.
+#if defined(__AVR__) || defined(ARDUINO_ARCH_SAM) || defined(ARDUINO_ARCH_RENESAS) || defined(ARDUINO_ARCH_RP2040)
+  #define HAS_TONE 1
+  #define TONE_MAX 20000   // audible ceiling in Hz; value 0 = silent. Host clamps to the same max.
+#else
+  #define HAS_TONE 0
+#endif
+
 // Motor slots are a RAM/CPU budget, not a hardware property: 2 on the small AVR
 // boards, 4 elsewhere. The peak step rate is bounded by loop()-scheduled stepping —
 // speed= requests beyond it are clamped (wrn) rather than promised and missed.
@@ -176,6 +186,7 @@ enum PinUse : uint8_t {
   MODE_PWM,
   MODE_SERVO,
   MODE_DAC,
+  MODE_TONE,    // square-wave tone() on a digital pin; value is the frequency in Hz
   MODE_MOTOR,   // claimed by a motor slot; released only by reconfiguring the motor
 };
 
@@ -564,6 +575,9 @@ static PinUse parseMode(const char* name) {
   if (strcmp(name, "pwm") == 0)   return MODE_PWM;
   if (strcmp(name, "servo") == 0) return MODE_SERVO;
   if (strcmp(name, "dac") == 0)   return MODE_DAC;
+#if HAS_TONE
+  if (strcmp(name, "tone") == 0)  return MODE_TONE;
+#endif
   return MODE_NONE;
 }
 
@@ -582,6 +596,9 @@ static bool supports(const Target& target, PinUse mode) {
 #if HAS_SERVO
       if (mode == MODE_SERVO) return pinCanOutput(target.pin);
 #endif
+#if HAS_TONE
+      if (mode == MODE_TONE) return pinCanOutput(target.pin);
+#endif
       return false;
     case TK_DAC:
       return mode == MODE_DAC;
@@ -594,6 +611,9 @@ static void tearDownPin(uint8_t pin) {
 #if HAS_SERVO
   if (s_mode[pin] == MODE_SERVO) detachServo(pin);
 #endif
+#if HAS_TONE
+  if (s_mode[pin] == MODE_TONE) noTone(pin);
+#endif
   if (s_mode[pin] != MODE_NONE) pinMode(pin, INPUT);   // safe floating default
   s_mode[pin] = MODE_NONE;
 }
@@ -605,6 +625,9 @@ static int maxValueFor(PinUse mode) {
     case MODE_SERVO: return 180;
 #if DAC_COUNT > 0
     case MODE_DAC:   return (1 << DAC_BITS) - 1;
+#endif
+#if HAS_TONE
+    case MODE_TONE:  return TONE_MAX;
 #endif
     default:         return 0;
   }
@@ -632,6 +655,12 @@ static void writeOutput(const Target& target, int value) {
     case MODE_DAC:
       analogWriteResolution(DAC_BITS);
       analogWrite(target.pin, value);
+      break;
+#endif
+#if HAS_TONE
+    case MODE_TONE:
+      if (value > 0) tone(target.pin, (unsigned int) value);   // square wave at value Hz
+      else           noTone(target.pin);                       // 0 = silent
       break;
 #endif
     default:
@@ -689,6 +718,9 @@ static void handleCaps() {
     if (out && digitalPinHasPWM(pin)) Serial.print(F(",pwm"));
 #if HAS_SERVO
     if (out) Serial.print(F(",servo"));
+#endif
+#if HAS_TONE
+    if (out) Serial.print(F(",tone"));
 #endif
     if (out && digitalPinHasPWM(pin)) {
       Serial.print(F(" pwm="));
@@ -788,6 +820,9 @@ static void handleCfg(uint8_t argc, char** argv) {
       break;
 #endif
     case MODE_DAC:        /* configured per write */         break;
+#if HAS_TONE
+    case MODE_TONE:       pinMode(target.pin, OUTPUT);        break;
+#endif
     default: break;
   }
 
@@ -1132,7 +1167,10 @@ static void handleSet(uint8_t argc, char** argv) {
     }
 
     PinUse mode = (PinUse) s_mode[target.pin];
-    if (mode != MODE_DOUT && mode != MODE_PWM && mode != MODE_SERVO && mode != MODE_DAC) {
+    // MODE_TONE is always defined; no pin is ever left in it when HAS_TONE is off, so the
+    // extra comparison is harmless there. set d<n>=<freq> drives a tone pin indefinitely
+    // (the timed one-shot uses the beep verb).
+    if (mode != MODE_DOUT && mode != MODE_PWM && mode != MODE_SERVO && mode != MODE_DAC && mode != MODE_TONE) {
       Serial.print(F("err set "));
       printTargetName(target);
       Serial.print(F(" unconfigured\n"));
@@ -1160,6 +1198,55 @@ static void handleSet(uint8_t argc, char** argv) {
   if (clamped) Serial.print(F(" clamped"));
   Serial.print('\n');
 }
+
+#if HAS_TONE
+// beep <pin> <freq> [<ms>] — play a tone on a tone-configured pin. With ms > 0 the board
+// stops it on its own after that many milliseconds (Arduino tone(pin,freq,dur) is
+// non-blocking); ms omitted or 0 plays until changed. Used for one-shot beeps; sustained /
+// gated tones use plain set. The ok/wrn echoes the effective freq and ms.
+static void handleBeep(uint8_t argc, char** argv) {
+  if (argc < 3) {
+    Serial.print(F("err beep malformed\n"));
+    return;
+  }
+
+  Target target = parseTarget(argv[1]);
+  long freq, ms = 0;
+  if (target.kind == TK_NONE || !parseInt(argv[2], &freq) ||
+      (argc >= 4 && !parseInt(argv[3], &ms))) {
+    Serial.print(F("err beep "));
+    Serial.print(argv[1]);
+    Serial.print(F(" malformed\n"));
+    return;
+  }
+
+  if ((PinUse) s_mode[target.pin] != MODE_TONE) {
+    Serial.print(F("err beep "));
+    printTargetName(target);
+    Serial.print(F(" unconfigured\n"));
+    return;
+  }
+
+  bool clamped = false;
+  long max = maxValueFor(MODE_TONE);
+  if (freq < 0)   { freq = 0;   clamped = true; }
+  if (freq > max) { freq = max; clamped = true; }
+  if (ms < 0) ms = 0;
+
+  if (freq <= 0)   noTone(target.pin);
+  else if (ms > 0) tone(target.pin, (unsigned int) freq, (unsigned long) ms);
+  else             tone(target.pin, (unsigned int) freq);
+
+  Serial.print(clamped ? F("wrn beep ") : F("ok beep "));
+  printTargetName(target);
+  Serial.print(' ');
+  Serial.print(freq);
+  Serial.print(' ');
+  Serial.print(ms);
+  if (clamped) Serial.print(F(" clamped"));
+  Serial.print('\n');
+}
+#endif
 
 static void handleReset() {
   stopReporting();
@@ -1287,6 +1374,9 @@ static void handleLine(char* line) {
   else if (strcmp(verb, "cfg") == 0)    handleCfg(argc, argv);
   else if (strcmp(verb, "report") == 0) handleReport(argc, argv);
   else if (strcmp(verb, "set") == 0)    handleSet(argc, argv);
+#if HAS_TONE
+  else if (strcmp(verb, "beep") == 0)   handleBeep(argc, argv);
+#endif
   else if (strcmp(verb, "reset") == 0)  handleReset();
   else if (strcmp(verb, "move") == 0)   handleMove(false, argc, argv);
   else if (strcmp(verb, "moveto") == 0) handleMove(true, argc, argv);
